@@ -1,0 +1,78 @@
+---
+AWSTemplateFormatVersion: "2010-09-09"
+Description: CloudFormation Template to deploy cleanup Lambda"
+Parameters:
+  ExpirationPeriod:
+    Type: Number
+    Default: '30'
+  BucketPath:
+    Type: 'AWS::SSM::Parameter::Value<String>'
+    Default: '/tia/dev/infrastructure/bucketid'
+
+Resources:
+  LogGroup:
+    Type: AWS::Logs::LogGroup
+    Properties:
+      RetentionInDays: 60
+      LogGroupName: !Sub "/aws/lambda/${LambdaFunction}"
+
+  IamRole:
+    Type: AWS::IAM::Role
+    Properties:
+      AssumeRolePolicyDocument:
+        Version: 2012-10-17
+        Statement:
+          - Effect: Allow
+            Principal:
+              Service:
+                - lambda.amazonaws.com
+            Action:
+              - 'sts:AssumeRole'
+      Policies:
+         - PolicyName: collectionLambdaPolicy
+           PolicyDocument:
+             Version: 2012-10-17
+             Statement:
+                - Effect: Allow
+                  Action:
+                    - ec2:DescribeImages
+                    - ec2:DescribeInstances
+                    - ec2:DeregisterImage
+                    - ec2:DeleteSnapshot
+                    - ec2:DescribeSnapshots
+                  Resource: '*'
+         - PolicyName: lambdaCloudWatchPolicy
+           PolicyDocument:
+             Version: 2012-10-17
+             Statement:
+              - Effect: Allow
+                Action:
+                  - logs:CreateLogGroup
+                  - logs:CreateLogStream
+                  - logs:PutLogEvents
+                Resource: !Sub "arn:aws:logs:${AWS::Region}:${AWS::AccountId}:log-group:/aws/lambda/*"
+  CronEvent:
+    Type: AWS::Events::Rule
+    Properties:
+      Description: "CloudWatch Rule to trigger automated cleanup on a specified cadence"
+      ScheduleExpression: cron(0 1 16 * ? *)
+      State: "ENABLED"
+      Targets:
+        - Arn: !GetAtt LambdaFunction.Arn
+          Id: !Ref LambdaFunction
+
+  LambdaFunction:
+    Type: AWS::Lambda::Function
+    Properties:
+      Description: "Lambda Function to collect and remove deprecated AMI/EBS Snapshots"
+      Role: !GetAtt IamRole.Arn
+      Handler: collectionLambda.handler
+      Runtime: python3.8
+      Timeout: 300
+      Environment:
+        Variables:
+          ACCOUNT_ID: !Ref AWS::AccountId
+          EXP_TIME: !Ref ExpirationPeriod
+      Code:
+        S3Bucket: !Ref BucketPath
+        S3Key: collectionLambda.zip
